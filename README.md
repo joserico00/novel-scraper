@@ -1,77 +1,88 @@
 # Novel Scraper
 
-A short Python script that downloads one web-novel chapter page, finds the chapter body in the HTML with BeautifulSoup, and prints it as plain text. It is a minimal example of the `requests` + `BeautifulSoup` workflow: fetch, parse, locate one element, extract its text. The chapter URL is hard-coded, and the CSS class it looks for matches the post-content container used by WordPress block themes.
+A small command-line tool that downloads a web-novel chapter and saves it as plain text. Give it the chapter URL; it fetches the page, pulls out the story body, and can follow the site's next-chapter links for a run of chapters.
+
+```bash
+python scraper.py https://example.com/chapter-1/                     # print one chapter
+python scraper.py https://example.com/chapter-1/ -n 5 -o book.txt    # five chapters into a file
+```
+
+It checks `robots.txt` before fetching, identifies itself honestly, waits between requests, and stops with a readable message rather than a traceback when a page is not what it expected.
 
 ## Contents
 
 | File | Description |
 |---|---|
-| `scraper.py` | `get_novel_text(url)` plus a module-level call that fetches and prints one chapter |
+| `scraper.py` | The tool: `fetch`, `extract_chapter`, `robots_allows`, `scrape`, and the CLI |
+| `tests/test_scraper.py` | 20 tests, all offline — a fake session serves canned pages |
 
-## How `scraper.py` works
+## Options
+
+| Option | Default | What it does |
+|---|---|---|
+| `url` | required | Chapter to start from |
+| `-n`, `--chapters` | `1` | How many chapters to follow from that one |
+| `-o`, `--output` | stdout | Write the text to this file instead |
+| `--selector` | `div.entry-content` | CSS selector for the chapter body |
+| `--next-selector` | `a[rel="next"]` | CSS selector for the next-chapter link |
+| `--delay` | `2.0` | Seconds to wait between pages |
+| `--timeout` | `20.0` | Seconds to wait for each response |
+| `--user-agent` | `novel-scraper/1.0 …` | How the client identifies itself |
+| `--ignore-robots` | off | Skip the `robots.txt` check (only with the site's permission) |
+
+The defaults suit WordPress block themes, which wrap the post body in `<div class="entry-content …">` and mark the following chapter with `rel="next"`. For any other site, open a chapter in your browser, inspect the element holding the story text, and pass its selector with `--selector`.
+
+## How it works
 
 ```
-requests.get(url) ──► response.text (HTML)
-        │
-        ▼
-BeautifulSoup(html, "html.parser")
-        │
-        ▼
-soup.find("div", {"class": "entry-content wp-block-post-content has-global-padding is-layout-constrained"})
-        │
-        ├──► print(text_div)          # debug: the raw HTML of the element
-        ▼
-text_div.text ──► returned, then printed
+robots.txt ──► allowed?          ──no──► stop with an explanation
+     │ yes
+     ▼
+session.get(url, timeout)        retries 429/5xx with backoff
+     │
+     ▼
+raise_for_status()               an error page is an error, not content
+     │
+     ▼
+soup.select_one(selector)        ──no match──► ChapterNotFound, naming --selector
+     │
+     ▼
+get_text("\n")  ──► chapter text, paragraph breaks intact
+soup.select_one('a[rel="next"]') ──► next URL, resolved against the current one
 ```
 
-`get_novel_text(url)` does the following:
+Some details worth knowing:
 
-1. **Fetch:** `requests.get(url)` sends a plain GET request with the library's default headers. There is no timeout and no status-code check.
-2. **Parse:** `BeautifulSoup(response.text, 'html.parser')` builds a parse tree with Python's built-in HTML parser, so `lxml` is not needed.
-3. **Find the chapter container:** `soup.find('div', {'class': "entry-content wp-block-post-content has-global-padding is-layout-constrained"})` returns the first `<div>` whose `class` attribute matches that string. When the class string contains spaces, BeautifulSoup compares it with the whole attribute value, so the classes must appear in the same order on the page. The comment in the code notes that other sites will need a different tag, class or id.
-4. **Debug print:** `print(text_div)` writes the element's full HTML to stdout.
-5. **Extract text:** `text_div.text` returns all text inside the div with the tags removed. Line breaks come from whitespace in the page source, not from `<p>` boundaries.
-
-At module level, the script calls `get_novel_text(...)` with one chapter URL (line 15) and prints the result. **Output** goes to stdout: first the HTML dump from step 4, then the plain chapter text.
-
-### Limitations
-
-- **Fragile selector:** if the page uses a different theme, lists the classes in a different order, returns an error page, or blocks the request, `find` returns `None`. The script then fails with `AttributeError: 'NoneType' object has no attribute 'text'`.
-- **No error handling:** no timeout, retry, `response.raise_for_status()` or explicit encoding. `response.text` uses the encoding that `requests` guesses.
-- **One page per run:** to fetch another chapter you must edit the URL. The request runs at import time (there is no `if __name__ == "__main__":` guard), so importing `get_novel_text` from another script also fetches the hard-coded chapter.
-- Anything inside the content `<div>`, such as author notes or embedded navigation, ends up in the output.
-
-## Responsible use
-
-Before scraping any site:
-
-- **Read the site's Terms of Service.** Many novel and publishing sites prohibit automated downloading or republishing.
-- **Check `robots.txt`** (for example `https://<site>/robots.txt`) and respect disallowed paths and crawl delays.
-- **Limit your request rate.** If you extend the script to loop over chapters, add a delay between requests and identify your client honestly.
-- **Respect copyright.** Keep downloaded chapters for permitted personal use, don't redistribute them, and support authors and translators through official channels.
+- **The selector matches classes individually.** A page listing its classes in a different order still matches, which an exact `class="a b c"` comparison would not.
+- **Paragraph breaks survive.** Text is extracted with a newline separator, so the last word of one paragraph does not run into the first word of the next.
+- **A chapter that links to itself does not loop.** Visited URLs are remembered, and the run stops when there is no next link.
+- **Importing fetches nothing.** `get_novel_text(url)` is available for use from another script, and nothing runs until you call it.
 
 ## Requirements
 
-- Python 3.7+
-- `requests`
-- `beautifulsoup4`
+- Python 3.9+
+- `requests`, `beautifulsoup4`
 
 ```bash
-pip install requests beautifulsoup4
+pip install -r requirements.txt
 ```
 
-## Usage
+## Tests
 
 ```bash
-python3 scraper.py                 # prints the element's HTML, then the chapter text
-python3 scraper.py > chapter.txt   # save the output (the HTML dump comes first)
+python tests/test_scraper.py        # or: python -m unittest discover tests
 ```
 
-To adapt it to another chapter or site:
+The tests never touch the network: a fake session serves canned HTML, so they also cover the failure paths (404, blocked by robots, selector miss) that are awkward to trigger against a real site.
 
-1. Open the chapter in a browser and use the developer tools to inspect the element that holds the story text.
-2. Change the URL passed to `get_novel_text(...)` at the bottom of `scraper.py`.
-3. Change the tag and `class` in the `soup.find(...)` call to match that element.
+## Responsible use
+
+Before pointing this at any site:
+
+- **Read the site's Terms of Service.** Many novel and publishing sites prohibit automated downloading or republishing.
+- **Respect `robots.txt`.** The tool checks it for you; `--ignore-robots` exists for sites you have permission to crawl, not as a convenience.
+- **Keep the request rate low.** The default two-second delay is a floor, not a target, and `--delay` raises it.
+- **Respect copyright.** Downloaded chapters are for permitted personal use. Don't redistribute them, and support authors and translators through official channels.
 
 ## Author
 
