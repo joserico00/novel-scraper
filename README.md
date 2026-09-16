@@ -87,3 +87,7 @@ Before pointing this at any site:
 ## Author
 
 Jose E. Rodriguez Rios
+
+## License
+
+MIT — see [LICENSE](LICENSE).
